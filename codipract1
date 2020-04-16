@@ -1,0 +1,193 @@
+import pywren_ibm_cloud as pywren
+import numpy as np
+import pickle
+import time
+from functools import wraps
+
+
+
+COS_BUCKET = 'sd-bucket-1'
+iterdata = []
+valor = 0
+
+elapsed_time = 0.0
+
+def timeit(fn):
+    @wraps(fn)
+    def with_profiling(*args, **kwargs):
+        global elapsed_time
+        start_time = time.time()
+        ret = fn(*args, **kwargs)
+        elapsed_time = time.time() - start_time
+        return ret
+    return with_profiling
+
+def foo():
+    time.sleep(1.5)
+    print("Execution done!")
+
+def my_functionparalel(workers, rows1, cols1, rows2, cols2, ibm_cos):
+    
+    my_workers = workers
+    my_rows1 = rows1
+    my_rows2 = rows2
+    my_cols1 = cols1
+    my_cols2 = cols2
+    imparell_fil = False
+
+    if ( my_workers <= my_rows1):
+        nfils = int(my_rows1 / my_workers)
+        ncols = my_cols2
+        if  ( my_rows1 % my_workers != 0):
+            imparell_fil = True
+            nfils2 = nfils + (my_rows1 % my_workers)
+        
+    else:
+        nfils = 1
+        ncols = 1
+
+
+    #X = np.array([[1, 2], [3, 4], [5, 6], [7, 8], [9, 10], [10, 11], [12, 13], [14, 15], [16, 17], [18, 19],
+        #[11, 22], [33, 44], [55, 66], [77, 88], [99, 1], [10, 1], [1, 1], [14, 1], [1, 17], [18, 1],]) 
+    #Y = np.array([[1, 2], [7, 8]]) 
+    X = np.random.randint(10, size=(my_rows1, my_cols1))
+    Y = np.random.randint(10, size=(my_rows2, my_cols2))
+
+
+    #subfiles
+    primer = 1
+    lletra = 'a'
+    ext = '.txt'
+    llista = []
+    prim = str(primer)
+
+    if (imparell_fil):
+        my_rows1 = my_rows1 - nfils2
+
+    for i in range(0, my_rows1, nfils): 
+        a = X[i:i+nfils,:]
+        z = pickle.dumps(a)
+        key1 = prim + lletra + ext
+        ibm_cos.put_object(Bucket=COS_BUCKET,Key=key1, Body=z)
+        llista.append(key1)
+        primer = primer + 1
+        prim = str(primer)
+
+    if (imparell_fil):
+        a = X[my_rows1:my_rows1+nfils2,:]
+        z = pickle.dumps(a)
+        key1 = prim + lletra + ext
+        ibm_cos.put_object(Bucket=COS_BUCKET,Key=key1, Body=z)
+        llista.append(key1)
+
+    #subcolumnes
+    primer = 1
+    lletra ='b'
+    ext = '.txt'
+    prim = str(primer)
+    llista2 = []
+    for i in range(0, my_cols2, ncols): 
+        b = Y[:,i:i+ncols]
+        z = pickle.dumps(b)
+        key2 = prim + lletra + ext
+        ibm_cos.put_object(Bucket=COS_BUCKET,Key=key2, Body=z)
+        primer = primer + 1
+        prim = str(primer)
+        llista2.append(key2)
+
+    iterdata = []
+
+    for i in range (len(llista)):
+        for j in range (len(llista2)):
+            iterdata.append(llista[i]+"-"+llista2[j])
+        
+    return iterdata
+
+  
+def my_map_function(result, ibm_cos): #baixar les submatrius i multiplicar-les, el resultat es retorna cap a la funcio map reduce
+    
+    at = result.split("-") 
+    key1 = at[0]
+    key2 = at[1]
+    aa = ibm_cos.get_object(Bucket=COS_BUCKET, Key=key1)['Body'].read()
+    bb = ibm_cos.get_object(Bucket=COS_BUCKET, Key=key2)['Body'].read()
+    a = pickle.loads(aa)
+    b = pickle.loads(bb)
+     
+    #result2 = np.random.randint(1, size=(len(a), len(b[0])))
+    result2 = np.zeros((len(a),len(b[0])),int)
+    # iterate through rows of X
+    for i in range(len(a)):
+    # iterate through columns of Y
+         for j in range(len(b[0])):
+         # iterate through rows of Y
+            for k in range(len(b)):
+                result2[i][j] += a[i][k] * b[k][j]
+
+    
+    eti = key1.split(".")
+    eti2 = key2.split(".")  
+    
+    valor = eti[0] + eti2[0]
+
+    return {valor: result2.tolist()}  #es retorna un diccionari
+
+def my_reduce_function(results): #reduir les multiples matrius petites a una gran
+    dicc = {}
+
+    for map_result in results:
+       
+        dicc.update(map_result)
+
+   
+    unformatted_matrix = []
+    for i in dicc:
+        for row in dicc[i]:
+            unformatted_matrix.extend(row)
+
+    
+    
+    C = []
+    global rows1, cols2
+    mida_matriu_final = rows1 * cols2
+    cols_matriu_final = cols2
+
+    for i in range(0, mida_matriu_final, cols_matriu_final):
+        row = unformatted_matrix[i:i+cols_matriu_final]
+        print(row)
+        C.append(row)
+
+    return C
+ 
+if __name__ == '__main__':
+    foo()
+    pw = pywren.ibm_cf_executor()
+    
+    rows1 = 20
+    cols1 = 2
+    rows2 = 2
+    cols2 = 2
+    work = 40
+    #work = int(rows1/2)
+
+    if (work <= rows1): 
+        workers = work
+    elif (work == rows1*cols2): 
+        workers=work
+    elif ( workers > 100 ):
+            workers = 100
+    else: 
+        workers=1  #en cas que el nº de workers no sigui valid serà 1 el nº de workers
+    if (cols1 != rows2):
+        rows2 = cols1
+
+    pw.call_async(my_functionparalel, [workers, rows1, cols1, rows2, cols2])
+    iterdata=pw.get_result()
+    print(iterdata)
+    start_time = time.time()
+    futures = pw.map_reduce(my_map_function, iterdata, my_reduce_function)
+    # wait for the completion of map_reduce() call
+    pw.wait(futures)
+    elapsed_time = time.time() - start_time
+    print(pw.get_result())
+    print ('Elapsed time:{0:.2f}'.format(elapsed_time))

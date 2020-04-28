@@ -6,7 +6,7 @@ from functools import wraps
 
 
 
-COS_BUCKET = 'sd-bucket-1'
+COS_BUCKET = 'namebucket'
 iterdata = []
 valor = 0
 
